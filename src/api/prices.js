@@ -61,9 +61,12 @@ export async function fetchThaiMutualFund(fundCode) {
 
   try {
     const url = `https://api.finnomena.com/fund/public/v2/funds/${code}/nav/latest`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
     if (res.ok) {
-      const json = await res.json();
+      const outer = await res.json();
+      if (!outer?.contents) throw new Error('empty proxy response');
+      const json = JSON.parse(outer.contents);
       const nav  = json?.data?.nav ?? json?.data?.value ?? json?.nav;
       if (nav && parseFloat(nav) > 0) {
         const prev = json?.data?.prev_nav ?? json?.data?.prev_value ?? nav;
