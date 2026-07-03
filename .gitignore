@@ -1,0 +1,23 @@
+# ─── CRITICAL: Never commit these ───
+node_modules/
+build/
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# CRA
+.cache/
