@@ -52,31 +52,70 @@ export async function fetchStockPrice(symbol) {
 // a subscription key + an internal proj_id (not the fund ticker), so it can't
 // be called directly from a public ticker code without a registered key.
 //
+// Getting to FINNOMENA also requires a CORS proxy (the API sends no CORS
+// headers). Free public proxies (allorigins, etc.) are shared/unauthenticated
+// and go down or time out unpredictably — so instead of trusting one proxy
+// for a long timeout, we race through a short list of proxies with a SHORT
+// per-attempt timeout each. A dead proxy fails fast (4s) instead of stalling
+// the whole fetch for 8-10s before falling back.
+//
 // Strategy used here:
-//   1. Try FINNOMENA opportunistically (free, no key — works today, may break)
-//   2. If it fails, return a clean "manual" flag (NOT an error) so the UI
+//   1. Try FINNOMENA through each proxy in order, 4s timeout per attempt
+//   2. If all fail, return a clean "manual" flag (NOT an error) so the UI
 //      treats manual NAV entry as a normal first-class path, not a failure state
+const CORS_PROXIES = [
+  (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+// Different proxies wrap the response differently — normalize to raw JSON text
+async function unwrapProxyResponse(res, proxyIndex) {
+  if (proxyIndex === 0) {
+    // allorigins /get wraps the body as a JSON string under `contents`
+    const outer = await res.json();
+    if (!outer?.contents) throw new Error('empty proxy response');
+    return JSON.parse(outer.contents);
+  }
+  // corsproxy.io and codetabs pass the body through directly
+  return res.json();
+}
+
+async function fetchFinnomenaNav(code) {
+  const targetUrl = `https://api.finnomena.com/fund/public/v2/funds/${code}/nav/latest`;
+
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    try {
+      const proxyUrl = CORS_PROXIES[i](targetUrl);
+      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(4000) });
+      if (!res.ok) continue; // this proxy is down/erroring — try the next one
+      const json = await unwrapProxyResponse(res, i);
+      const nav  = json?.data?.nav ?? json?.data?.value ?? json?.nav;
+      if (nav && parseFloat(nav) > 0) {
+        return { json, nav: parseFloat(nav) };
+      }
+    } catch {
+      // this proxy timed out or errored — move on to the next one
+      continue;
+    }
+  }
+  return null;
+}
+
 export async function fetchThaiMutualFund(fundCode) {
   const code = fundCode.trim().toUpperCase();
 
   try {
-    const url = `https://api.finnomena.com/fund/public/v2/funds/${code}/nav/latest`;
-    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    const res = await fetch(proxy, { signal: AbortSignal.timeout(8000) });
-    if (res.ok) {
-      const outer = await res.json();
-      if (!outer?.contents) throw new Error('empty proxy response');
-      const json = JSON.parse(outer.contents);
-      const nav  = json?.data?.nav ?? json?.data?.value ?? json?.nav;
-      if (nav && parseFloat(nav) > 0) {
-        const prev = json?.data?.prev_nav ?? json?.data?.prev_value ?? nav;
-        const change = parseFloat(nav) - parseFloat(prev);
-        const changePct = prev ? (change / parseFloat(prev)) * 100 : 0;
-        return {
-          symbol: code, price: parseFloat(nav), change, changePct,
-          currency: 'THB', name: TH_FUND_NAMES[code] || code, source: 'finnomena',
-        };
-      }
+    const result = await fetchFinnomenaNav(code);
+    if (result) {
+      const { json, nav } = result;
+      const prev = json?.data?.prev_nav ?? json?.data?.prev_value ?? nav;
+      const change = nav - parseFloat(prev);
+      const changePct = prev ? (change / parseFloat(prev)) * 100 : 0;
+      return {
+        symbol: code, price: nav, change, changePct,
+        currency: 'THB', name: TH_FUND_NAMES[code] || code, source: 'finnomena',
+      };
     }
   } catch { /* expected to fail sometimes — fall through to manual */ }
 
