@@ -52,54 +52,41 @@ export async function fetchStockPrice(symbol) {
 // a subscription key + an internal proj_id (not the fund ticker), so it can't
 // be called directly from a public ticker code without a registered key.
 //
-// Getting to FINNOMENA also requires a CORS proxy (the API sends no CORS
-// headers). Free public proxies (allorigins, etc.) are shared/unauthenticated
-// and go down or time out unpredictably — so instead of trusting one proxy
-// for a long timeout, we race through a short list of proxies with a SHORT
-// per-attempt timeout each. A dead proxy fails fast (4s) instead of stalling
-// the whole fetch for 8-10s before falling back.
+// FINNOMENA also sends no CORS headers, so calling it directly from the
+// browser is always blocked. Public CORS proxies (allorigins, corsproxy.io,
+// etc.) are unauthenticated, shared by the whole internet, and go down or
+// start blocking traffic unpredictably — using them means your app's
+// reliability rides on services you don't control.
+//
+// The durable fix: route through OUR OWN Vercel serverless function
+// (/api/finnomena-nav.js), which fetches FINNOMENA server-side. Server-to-
+// server requests aren't subject to browser CORS at all, so this removes
+// the whole class of problem — no proxy uptime to gamble on.
+//
+// NOTE: this endpoint only exists once deployed on Vercel (or when running
+// `vercel dev` locally). A plain `npm start` / `react-scripts start` dev
+// server has no /api routes, so Thai funds will show "manual" on localhost
+// unless you use `vercel dev` instead.
 //
 // Strategy used here:
-//   1. Try FINNOMENA through each proxy in order, 4s timeout per attempt
-//   2. If all fail, return a clean "manual" flag (NOT an error) so the UI
+//   1. Call our own /api/finnomena-nav endpoint
+//   2. If it fails, return a clean "manual" flag (NOT an error) so the UI
 //      treats manual NAV entry as a normal first-class path, not a failure state
-const CORS_PROXIES = [
-  (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-  (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-];
-
-// Different proxies wrap the response differently — normalize to raw JSON text
-async function unwrapProxyResponse(res, proxyIndex) {
-  if (proxyIndex === 0) {
-    // allorigins /get wraps the body as a JSON string under `contents`
-    const outer = await res.json();
-    if (!outer?.contents) throw new Error('empty proxy response');
-    return JSON.parse(outer.contents);
-  }
-  // corsproxy.io and codetabs pass the body through directly
-  return res.json();
-}
-
 async function fetchFinnomenaNav(code) {
-  const targetUrl = `https://api.finnomena.com/fund/public/v2/funds/${code}/nav/latest`;
-
-  for (let i = 0; i < CORS_PROXIES.length; i++) {
-    try {
-      const proxyUrl = CORS_PROXIES[i](targetUrl);
-      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(4000) });
-      if (!res.ok) continue; // this proxy is down/erroring — try the next one
-      const json = await unwrapProxyResponse(res, i);
-      const nav  = json?.data?.nav ?? json?.data?.value ?? json?.nav;
-      if (nav && parseFloat(nav) > 0) {
-        return { json, nav: parseFloat(nav) };
-      }
-    } catch {
-      // this proxy timed out or errored — move on to the next one
-      continue;
+  try {
+    const res = await fetch(`/api/finnomena-nav?code=${encodeURIComponent(code)}`, {
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const nav  = json?.data?.nav ?? json?.data?.value ?? json?.nav;
+    if (nav && parseFloat(nav) > 0) {
+      return { json, nav: parseFloat(nav) };
     }
+    return null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 export async function fetchThaiMutualFund(fundCode) {
