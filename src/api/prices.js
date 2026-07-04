@@ -46,67 +46,19 @@ export async function fetchStockPrice(symbol) {
 }
 
 // ─── API: THAI MUTUAL FUNDS ──────────────────────────────────────────────────
-// Reality check: there is no fully reliable, free, no-key, CORS-open NAV API
-// for Thai mutual funds. FINNOMENA's endpoint is unofficial/reverse-engineered
-// and can change or break without notice. SEC Thailand's official API requires
-// a subscription key + an internal proj_id (not the fund ticker), so it can't
-// be called directly from a public ticker code without a registered key.
+// Decision: Thai mutual fund NAV auto-fetching has been removed entirely.
+// FINNOMENA's unofficial API has no stable public endpoint (it 404s, appears
+// to require an internal fund ID rather than the ticker, and the site itself
+// was rebuilt at some point — old reverse-engineered paths no longer work).
+// SEC Thailand's official API requires a paid subscription key + registered
+// proj_id. Neither is worth chasing for a personal tracker.
 //
-// FINNOMENA also sends no CORS headers, so calling it directly from the
-// browser is always blocked. Public CORS proxies (allorigins, corsproxy.io,
-// etc.) are unauthenticated, shared by the whole internet, and go down or
-// start blocking traffic unpredictably — using them means your app's
-// reliability rides on services you don't control.
-//
-// The durable fix: route through OUR OWN Vercel serverless function
-// (/api/finnomena-nav.js), which fetches FINNOMENA server-side. Server-to-
-// server requests aren't subject to browser CORS at all, so this removes
-// the whole class of problem — no proxy uptime to gamble on.
-//
-// NOTE: this endpoint only exists once deployed on Vercel (or when running
-// `vercel dev` locally). A plain `npm start` / `react-scripts start` dev
-// server has no /api routes, so Thai funds will show "manual" on localhost
-// unless you use `vercel dev` instead.
-//
-// Strategy used here:
-//   1. Call our own /api/finnomena-nav endpoint
-//   2. If it fails, return a clean "manual" flag (NOT an error) so the UI
-//      treats manual NAV entry as a normal first-class path, not a failure state
-async function fetchFinnomenaNav(code) {
-  try {
-    const res = await fetch(`/api/finnomena-nav?code=${encodeURIComponent(code)}`, {
-      signal: AbortSignal.timeout(6000),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const nav  = json?.data?.nav ?? json?.data?.value ?? json?.nav;
-    if (nav && parseFloat(nav) > 0) {
-      return { json, nav: parseFloat(nav) };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
+// Manual entry is simple, reliable, and already fully supported by the UI
+// (see the "manual" price tag / editable price field in Holdings). This
+// function always returns the manual-entry shape immediately — no network
+// call, no timeout, no flakiness.
 export async function fetchThaiMutualFund(fundCode) {
   const code = fundCode.trim().toUpperCase();
-
-  try {
-    const result = await fetchFinnomenaNav(code);
-    if (result) {
-      const { json, nav } = result;
-      const prev = json?.data?.prev_nav ?? json?.data?.prev_value ?? nav;
-      const change = nav - parseFloat(prev);
-      const changePct = prev ? (change / parseFloat(prev)) * 100 : 0;
-      return {
-        symbol: code, price: nav, change, changePct,
-        currency: 'THB', name: TH_FUND_NAMES[code] || code, source: 'finnomena',
-      };
-    }
-  } catch { /* expected to fail sometimes — fall through to manual */ }
-
-  // No reliable auto-source available right now — manual entry is the path
   return {
     symbol: code, price: null, change: 0, changePct: 0,
     currency: 'THB', name: TH_FUND_NAMES[code] || code,
